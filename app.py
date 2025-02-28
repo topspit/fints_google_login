@@ -1,69 +1,105 @@
 import os
-import flask
-from flask import Flask, redirect, request, url_for, render_template
-from flask_login import LoginManager, UserMixin, login_user, login_required, current_user, logout_user
-from google.auth.transport.requests import Request
-from google.auth import jwt
-import google.auth
+import pathlib
+import requests
+from flask import Flask, session, redirect, request, render_template, abort, jsonify
+from google.oauth2 import id_token
+from google_auth_oauthlib.flow import Flow
+from pip._vendor import cachecontrol
+import google.auth.transport.requests
+from functools import wraps
+from decrypt_sub import decrypt_file
 
-# Flask-Setup
 app = Flask(__name__)
-app.config.from_object('config')
-login_manager = LoginManager(app)
-login_manager.login_view = "index"
+app.secret_key = os.urandom(24)  # Geheime Session-Key
 
-# Dummy User Klasse
-class User(UserMixin):
-    def __init__(self, id):
-        self.id = id
+os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"  # Lokale HTTP-Entwicklung erlauben
 
-# Dummy-Datenbank, wo Benutzerinformationen gespeichert werden
-users = {}
+encrypted_file = "client_secret.json.enc"
+decrypted_file = "client_secret.json"
+password = os.getenv('DECRYPTION_PASSWORD')
+# Entschlüsselung der Datei direkt beim Start der Anwendung
+decrypt_file(encrypted_file, decrypted_file, password)
+print("Datei erfolgreich entschlüsselt")
 
-# Routen
-@app.route('/')
+# Google OAuth Konfiguration
+client_secrets_file = os.path.join(pathlib.Path(__file__).parent, decrypted_file)
+
+
+
+# OAuth 2.0 Flow einrichten
+flow = Flow.from_client_secrets_file(
+    client_secrets_file=client_secrets_file,
+    scopes=["https://www.googleapis.com/auth/userinfo.profile", "https://www.googleapis.com/auth/userinfo.email", "openid"],
+    redirect_uri="http://localhost:5000/login/callback"
+)
+
+# Löschen der Datei nach erfolgreichem Einlesen
+if os.path.exists(decrypted_file):
+    os.remove(decrypted_file)
+    print(f"{decrypted_file} wurde erfolgreich gelöscht.")
+else:
+    print(f"{decrypted_file} existiert nicht.")
+
+# Login-Required Decorator
+def login_required(f):
+    @wraps(f)  # Bewahrt den Namen und die Metadaten der Originalfunktion
+    def decorated_function(*args, **kwargs):
+        if "google_id" not in session:
+            return redirect("/")  # Falls nicht eingeloggt, zurück zur Startseite
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+
+@app.route("/")
 def index():
-    # Login-Seite mit Google
     return render_template("index.html")
 
-@app.route('/login/callback')
-def login_callback():
-    # Google Token verifizieren und Benutzer authentifizieren
-    token = request.args.get("token")
-    try:
-        credentials = google.auth.credentials.Credentials.from_authorized_user_info(token)
-    except Exception as e:
-        return f"Error during login: {str(e)}", 500
+@app.route("/login")
+def login():
+    authorization_url, state = flow.authorization_url()
+    session["state"] = state
+    return redirect(authorization_url)
 
-    user = User(id=token)
-    users[token] = user
-    login_user(user)
-    return redirect(url_for('dashboard'))
+@app.route("/login/callback")
+def callback():
+    
+    flow.fetch_token(authorization_response=request.url)
 
-@app.route('/dashboard', methods=['GET', 'POST'])
+    if not session["state"] == request.args["state"]:
+        abort(500)  # Falls State nicht passt
+
+    credentials = flow.credentials
+    request_session = requests.session()
+    cached_session = cachecontrol.CacheControl(request_session)
+    token_request = google.auth.transport.requests.Request(session=cached_session)
+
+    id_info = id_token.verify_oauth2_token(
+        id_token=credentials._id_token,
+        request=token_request,
+        audience=flow.client_config["client_id"]
+    )
+
+    session["google_id"] = id_info.get("sub")
+    session["name"] = id_info.get("name")
+    return redirect("/dashboard")
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/")
+
+@app.route("/dashboard")
 @login_required
 def dashboard():
-    # Einfache Addition von zwei Zahlen
-    result = None
-    if request.method == 'POST':
-        try:
-            num1 = float(request.form['num1'])
-            num2 = float(request.form['num2'])
-            result = num1 + num2
-        except ValueError:
-            result = "Ungültige Eingabe"
-    return render_template('dashboard.html', result=result)
+    return render_template("dashboard.html", name=session["name"])
 
-@app.route('/logout')
+@app.route("/add", methods=["POST"])
 @login_required
-def logout():
-    logout_user()
-    return redirect(url_for('index'))
+def add_numbers():
+    data = request.get_json()
+    result = data["num1"] + data["num2"]
+    return jsonify({"result": result})
 
-# User-Loader
-@login_manager.user_loader
-def load_user(user_id):
-    return users.get(user_id)
-
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)

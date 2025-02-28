@@ -3,19 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Google Login</title>
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <title>Login</title>
 </head>
 <body>
     <h1>Bitte mit Google einloggen</h1>
-    <div id="g_id_onload"
-         data-client_id="{{ config.GOOGLE_CLIENT_ID }}"
-         data-callback="handleCredentialResponse">
-    </div>
-    <script>
-        function handleCredentialResponse(response) {
-            window.location.href = "/login/callback?token=" + response.credential;
-        }
-    </script>
+    <a href="/login"><button>Login mit Google</button></a>
 </body>
 </html>
