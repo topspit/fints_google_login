@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>FINTS Login</title>
+</head>
+<body>
+    <h1>FINTS Login</h1>
+    {% if error %}
+        <p style="color: red;">{{ error }}</p>
+    {% endif %}
+    
+    <form action="/fints_login" method="post">
+        <label>Server:</label>
+        <input type="text" name="server" value="https://fints1.atruvia.de/cgi-bin/hbciservlet" required>
+        <br>
+        <label>Bankleitzahl:</label>
+        <input type="text" name="bank_identifier" value="66190000" required>
+        <br>
+        <label>VR-Netkey:</label>
+        <input type="text" name="user_id" required>
+        <br>
+        <label>PIN:</label>
+        <input type="password" name="pin" required>
+        <br>
+        <button type="submit">Login</button>
+    </form>
+    
+    <a href="/logout">Logout</a>
+</body>
+</html>

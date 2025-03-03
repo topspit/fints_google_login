@@ -2,35 +2,15 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard</title>
-    <script>
-        function addNumbers() {
-            let num1 = parseFloat(document.getElementById("num1").value);
-            let num2 = parseFloat(document.getElementById("num2").value);
-
-            fetch("/add", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({ num1: num1, num2: num2 })
-            })
-            .then(response => response.json())
-            .then(data => {
-                document.getElementById("result").innerText = "Ergebnis: " + data.result;
-            });
-        }
-    </script>
 </head>
 <body>
-    <h1>Willkommen, {{ name }}!</h1>
-    <a href="/logout"><button>Logout</button></a>
-
-    <h2>Einfacher Rechner</h2>
-    <input type="number" id="num1" placeholder="Zahl 1">
-    <input type="number" id="num2" placeholder="Zahl 2">
-    <button onclick="addNumbers()">Berechnen</button>
-    <p id="result"></p>
+    <body>
+        <h2>Kontostand</h2>
+        <p>Konto: {{ konto }}</p>
+        <p>Saldo: {{ saldo }} EUR</p>
+    </body>
+    
+    <a href="/logout">Logout</a>
 </body>
 </html>

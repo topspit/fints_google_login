@@ -8,6 +8,7 @@ from pip._vendor import cachecontrol
 import google.auth.transport.requests
 from functools import wraps
 from decrypt_sub import decrypt_file
+from fints.client import FinTS3PinTanClient, NeedTANResponse
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # Geheime Session-Key
@@ -24,6 +25,8 @@ print("Datei erfolgreich entschlüsselt")
 # Google OAuth Konfiguration
 client_secrets_file = os.path.join(pathlib.Path(__file__).parent, decrypted_file)
 
+#FINTSClient-Product-ID
+product_id = "36792786FA12F235F04647689"
 
 
 # OAuth 2.0 Flow einrichten
@@ -49,7 +52,8 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-
+# Simulierter Google Key Store (später durch echten ersetzen)
+mock_google_key_store = {}
 
 @app.route("/")
 def index():
@@ -82,6 +86,8 @@ def callback():
 
     session["google_id"] = id_info.get("sub")
     session["name"] = id_info.get("name")
+    session["email"] = id_info.get("email") # speicherung eMail
+    print(session["email"])
     return redirect("/dashboard")
 
 @app.route("/logout")
@@ -89,17 +95,71 @@ def logout():
     session.clear()
     return redirect("/")
 
+# Simulierter Google Key Store (nur für den Test)
+mock_google_key_store = {}
+
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    return render_template("dashboard.html", name=session["name"])
+    email = session.get("email")
+    if not email:
+        return redirect("/")
 
-@app.route("/add", methods=["POST"])
+    # Simulierte Abfrage im Google Key Store
+    if email in mock_google_key_store:
+       # fints_data = mock_google_key_store[email]  # Falls Daten existieren
+       # fints_client = FinTSClient(fints_data["bank_identifier"], fints_data["user_id"], fints_data["pin"])
+       # accounts = fints_client.get_accounts()
+       # balances = {acc.iban: fints_client.get_balance(acc) for acc in accounts}
+        print(f"email ist in mock?")
+        return render_template("dashboard.html", name=session["name"])
+    
+    # Falls keine Daten existieren -> FINTS Login Maske anzeigen
+    print(f"email ist NICHT in mock?")
+    return redirect("/fints_login")
+
+@app.route("/fints_login", methods=["GET", "POST"])
 @login_required
-def add_numbers():
-    data = request.get_json()
-    result = data["num1"] + data["num2"]
-    return jsonify({"result": result})
+def fints_login():
+    if request.method == "POST":
+        print(f"sind wohl im fint_login_post")
+        bank_identifier = request.form["bank_identifier"]
+        user_id = request.form["user_id"]
+        pin = request.form["pin"]
+        server = request.form["server"]
+
+        # FINTS Login testen
+        f = FinTS3PinTanClient(
+            bank_identifier=bank_identifier,
+            user_id=user_id,
+            pin=pin,
+            server=server,
+            product_id=product_id
+        )
+        with f:
+            # Falls eine TAN nötig ist
+            if f.init_tan_response:
+                return render_template("tan.html", challenge=f.init_tan_response.challenge)
+
+            # Konten abrufen
+            accounts = f.get_sepa_accounts()
+            if not accounts:
+                return "Keine Konten gefunden.", 400
+            
+            # Ersten Kontosaldo abrufen
+            saldo = f.get_balance(accounts[0])
+            print(saldo.amount)
+            print(accounts[0].iban)
+            print(f"sind wohl im fint_login_post")
+
+        print(f"sind vor return dashboard.html") 
+        return render_template("dashboard.html", konto=accounts[0].iban, saldo=saldo.amount)
+
+        
+
+    return render_template("fints_login.html")
+
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
