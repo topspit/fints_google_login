@@ -9,21 +9,44 @@ import google.auth.transport.requests
 from functools import wraps
 from decrypt_sub import decrypt_file
 from fints.client import FinTS3PinTanClient, NeedTANResponse
+import firebase_admin
+from firebase_admin import credentials, firestore
+from decrypt_enc_PIN import decrypt_pin, encrypt_pin
+
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # Geheime Session-Key
 
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"  # Lokale HTTP-Entwicklung erlauben
 
+
+# Entschlüsselung der Client Secret Datei für Google OAuth direkt beim Start der Anwendung
 encrypted_file = "client_secret.json.enc"
 decrypted_file = "client_secret.json"
 password = os.getenv('DECRYPTION_PASSWORD')
-# Entschlüsselung der Datei direkt beim Start der Anwendung
 decrypt_file(encrypted_file, decrypted_file, password)
-print("Datei erfolgreich entschlüsselt")
 
 # Google OAuth Konfiguration
 client_secrets_file = os.path.join(pathlib.Path(__file__).parent, decrypted_file)
+
+# Entschlüsselung der Client Secret Datei für Google OAuth direkt beim Start der Anwendung
+encrypted_file_firestone = "service-account.json.enc"
+decrypted_file_firestone = "service-account.json"
+password_firestone = os.getenv('DECRYPTION_PASSWORD')
+decrypt_file(encrypted_file_firestone, decrypted_file_firestone, password_firestone)
+# Lade die Service-Account-Daten
+cred = credentials.Certificate(decrypted_file_firestone)
+
+# Firebase-App initialisieren
+firebase_admin.initialize_app(cred)
+# Löschen der service account json firestone Datei nach erfolgreichem Einlesen
+if os.path.exists(decrypted_file_firestone):
+    os.remove(decrypted_file_firestone)
+    print(f"{decrypted_file_firestone} wurde erfolgreich gelöscht.")
+else:
+    print(f"{decrypted_file_firestone} existiert nicht.")
+# Firestore-Client erstellen
+db = firestore.client()
 
 #FINTSClient-Product-ID
 product_id = "36792786FA12F235F04647689"
@@ -67,11 +90,15 @@ def login():
 
 @app.route("/login/callback")
 def callback():
-    
-    flow.fetch_token(authorization_response=request.url)
+    state_from_session = session.get("state")  # Sicher abrufen, ohne KeyError
+    state_from_request = request.args.get("state")
 
-    if not session["state"] == request.args["state"]:
-        abort(500)  # Falls State nicht passt
+    # Überprüfen, ob "state" fehlt
+    if not state_from_session or state_from_session != state_from_request:
+        return redirect("/logout")  # Oder eine Fehlermeldung anzeigen
+
+    # Wenn der State stimmt, OAuth-Flow fortsetzen...
+    flow.fetch_token(authorization_response=request.url)
 
     credentials = flow.credentials
     request_session = requests.session()
@@ -104,31 +131,19 @@ def dashboard():
     email = session.get("email")
     if not email:
         return redirect("/")
+    user_ref = db.collection("known_users").document(email)
+    user_doc = user_ref.get()
 
     # Simulierte Abfrage im Google Key Store
-    if email in mock_google_key_store:
-       # fints_data = mock_google_key_store[email]  # Falls Daten existieren
-       # fints_client = FinTSClient(fints_data["bank_identifier"], fints_data["user_id"], fints_data["pin"])
-       # accounts = fints_client.get_accounts()
-       # balances = {acc.iban: fints_client.get_balance(acc) for acc in accounts}
-        print(f"email ist in mock?")
-        return render_template("dashboard.html", name=session["name"])
-    
-    # Falls keine Daten existieren -> FINTS Login Maske anzeigen
-    print(f"email ist NICHT in mock?")
-    return redirect("/fints_login")
+    if user_doc.exists:
+        # Falls der Nutzer existiert, die gespeicherten Daten abrufen
+        user_data = user_doc.to_dict()
+        bank_identifier = user_data["bank_identifier"]
+        user_id = user_data["user_id"]
+        pin = decrypt_pin(user_data["pin"])
+        server = user_data["server"]
 
-@app.route("/fints_login", methods=["GET", "POST"])
-@login_required
-def fints_login():
-    if request.method == "POST":
-        print(f"sind wohl im fint_login_post")
-        bank_identifier = request.form["bank_identifier"]
-        user_id = request.form["user_id"]
-        pin = request.form["pin"]
-        server = request.form["server"]
-
-        # FINTS Login testen
+        # FINTS Login durchführen
         f = FinTS3PinTanClient(
             bank_identifier=bank_identifier,
             user_id=user_id,
@@ -148,11 +163,53 @@ def fints_login():
             
             # Ersten Kontosaldo abrufen
             saldo = f.get_balance(accounts[0])
-            print(saldo.amount)
-            print(accounts[0].iban)
-            print(f"sind wohl im fint_login_post")
 
-        print(f"sind vor return dashboard.html") 
+        return render_template("dashboard.html", konto=accounts[0].iban, saldo=saldo.amount)
+
+    else:
+        print(f"email ist NICHT in mock?")
+        return redirect("/fints_login")
+
+@app.route("/fints_login", methods=["GET", "POST"])
+@login_required
+def fints_login():
+    if request.method == "POST":
+        print(f"sind wohl im fint_login_post")
+        bank_identifier = request.form["bank_identifier"]
+        user_id = request.form["user_id"]
+        pin = request.form["pin"]
+        server = request.form["server"]
+
+        # FINTS Login durchführen
+        f = FinTS3PinTanClient(
+            bank_identifier=bank_identifier,
+            user_id=user_id,
+            pin=pin,
+            server=server,
+            product_id=product_id
+        )
+        with f:
+            # Falls eine TAN nötig ist
+            if f.init_tan_response:
+                return render_template("tan.html", challenge=f.init_tan_response.challenge)
+
+            # Konten abrufen
+            accounts = f.get_sepa_accounts()
+            if not accounts:
+                return "Keine Konten gefunden.", 400
+            
+            # Ersten Kontosaldo abrufen
+            saldo = f.get_balance(accounts[0])
+            # Daten in Firestore speichern
+            user_data = {
+            "bank_identifier": bank_identifier,
+            "user_id": user_id,
+            "pin": encrypt_pin(pin),  # Achtung: Unsicher, besser verschlüsseln!
+            "server": server
+            }
+            email = session["email"]
+            db.collection("known_users").document(email).set(user_data)
+            print("Datenbankschreiben scheint geklappt zu haben")
         return render_template("dashboard.html", konto=accounts[0].iban, saldo=saldo.amount)
 
         
